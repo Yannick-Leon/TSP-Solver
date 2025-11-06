@@ -336,3 +336,12 @@ code{
   .row.gap{ gap:8px; }
   .stats{ grid-template-columns: 1fr; }
 }
+
+/* Leaflet Map container */
+.leaflet-map{
+  width: 100%;
+  height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
