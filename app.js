@@ -2,8 +2,8 @@
    TSP Routenplaner – app.js
    CSV/JSON-Import, Heuristiken, 2-Opt,
    Haversine/Euklid, Canvas-Render, Exporte,
-   Mini-Erklärungen, Adress-Geocoding & Leaflet-Karte,
-   Rundtour (Start = Ziel)
+   Mini-Erklärungen, Geocoding & Leaflet,
+   Rundtour, OSRM-Straßenrouting
    ================================ */
 
 (() => {
@@ -18,12 +18,13 @@
   const btnSample   = $('#btnSample');
   const btnGeocode  = $('#btnGeocode');
 
-  const metricSelect = $('#metricSelect');
-  const algoSelect   = $('#algoSelect');
-  const chkFixStart  = $('#chkFixStart');
-  const startIndexEl = $('#startIndex');
-  const improveSelect= $('#improveSelect');
-  const chkRoundtrip = $('#chkRoundtrip');
+  const metricSelect    = $('#metricSelect');
+  const algoSelect      = $('#algoSelect');
+  const chkFixStart     = $('#chkFixStart');
+  const startIndexEl    = $('#startIndex');
+  const improveSelect   = $('#improveSelect');
+  const chkRoundtrip    = $('#chkRoundtrip');
+  const routeModeSelect = $('#routeModeSelect'); // NEU
 
   const btnSolve    = $('#btnSolve');
   const btnImprove  = $('#btnImprove');
@@ -70,11 +71,16 @@
   let roundtrip = false;
   let renderOptions = { labels: false, numbers: true, coords: false };
 
+  // Routing-Modus
+  let routeMode = 'straight'; // 'straight' | 'osrm'
+  let osrmDistanceMeters = null;
+  let osrmGeometry = null; // [[lat,lon], ...]
+
   // 2-Opt
   let improving = false;
   let stopFlag = false;
 
-  // Drawing transform cache (Canvas)
+  // Canvas Transform
   let transform = { scale: 1, tx: 0, ty: 0, padding: 24 };
 
   // RNG (optional seed)
@@ -112,10 +118,26 @@
     setTimeout(()=>toast.classList.remove('show'), 2600);
   }
 
+  function currentDistanceText() {
+    // Distanzanzeige mit OSRM, falls vorhanden
+    if (routeMode === 'osrm' && osrmDistanceMeters != null) {
+      if (osrmDistanceMeters >= 1000) return `${(osrmDistanceMeters/1000).toFixed(2)} km`;
+      return `${osrmDistanceMeters.toFixed(1)} m`;
+    }
+    const d = tourLength(route, metric, roundtrip);
+    if (metric === 'haversine') {
+      if (d >= 1000) return `${(d/1000).toFixed(2)} km`;
+      return `${d.toFixed(1)} m`;
+    }
+    return d.toFixed(3);
+  }
+
   function setStats({ method='–', timeMs=null } = {}) {
     statNodes.textContent = points.length;
-    statMethod.textContent = method + (roundtrip ? ' (Rundtour)' : '');
-    statDistance.textContent = route.length ? formatDistance(tourLength(route, metric, roundtrip)) : '–';
+    const suffix = roundtrip ? ' (Rundtour)' : '';
+    const routingNote = routeMode === 'osrm' ? ' [OSRM]' : '';
+    statMethod.textContent = method + suffix + routingNote;
+    statDistance.textContent = route.length ? currentDistanceText() : '–';
     statTime.textContent = timeMs==null ? '–' : `${timeMs.toFixed(1)} ms`;
   }
 
@@ -124,17 +146,10 @@
     const m = DESCRIPTIONS.metric[metricKey] ?? '';
     const a = DESCRIPTIONS.algo[methodKey] ?? methodKey;
     const i = DESCRIPTIONS.improve[improveKey] ?? '';
-    const distText = route.length ? `Aktuelle Gesamtdistanz: ${formatDistance(tourLength(route, metric, roundtrip))}.` : '';
+    const distText = route.length ? `Aktuelle Gesamtdistanz: ${currentDistanceText()}.` : '';
     const rText = roundtrip ? ' • Rundtour (Start=Ziel).' : '';
-    explainEl.textContent = `${a}${improveKey !== 'none' ? ' + ' + i : ''} • ${m}${rText} ${distText}`;
-  }
-
-  function formatDistance(d) {
-    if (metric === 'haversine') {
-      if (d >= 1000) return `${(d/1000).toFixed(2)} km`;
-      return `${d.toFixed(1)} m`;
-    }
-    return d.toFixed(3);
+    const rmText = routeMode === 'osrm' ? ' • Straßenrouting via OSRM.' : '';
+    explainEl.textContent = `${a}${improveKey !== 'none' ? ' + ' + i : ''} • ${m}${rText}${rmText} ${distText}`;
   }
 
   function toXYArray(srcPoints) {
@@ -319,19 +334,17 @@
           metricKey: metricSelect.value
         });
 
-        if (mapVisible) updateMap();
+        // OSRM neu berechnen, falls aktiv
+        if (routeMode === 'osrm') await computeOsrmForCurrentRoute();
 
         if (stepMode) {
-          showToast(`2-Opt Schritt: Δ = −${formatDistance(res.gain)} ✓`, { ok:true });
+          showToast(`2-Opt Schritt: Δ verbessert ✓`, { ok:true });
           break;
         }
         await new Promise(r => setTimeout(r, 0));
       } else {
-        if (stepMode) {
-          showToast('2-Opt: keine weitere Verbesserung gefunden.', { warn:true });
-        } else {
-          showToast(`2-Opt fertig in ${iterations} Iterationen.`, { ok:true });
-        }
+        if (stepMode) showToast('2-Opt: keine weitere Verbesserung gefunden.', { warn:true });
+        else showToast(`2-Opt fertig in ${iterations} Iterationen.`, { ok:true });
         break;
       }
     }
@@ -547,14 +560,13 @@
 
     if (!points.length) return;
 
-    // Warnung wenn Euklid-Koordinaten auf Karte
     if (metric !== 'haversine') {
-      showToast('Hinweis: Karte erwartet Lat/Lon (Haversine). Euklidische Punkte werden ggf. falsch angezeigt.', { warn:true });
+      showToast('Hinweis: Karte/OSRM erwarten Lat/Lon (Haversine).', { warn:true });
     }
 
-    // Marker gemäß Route (oder Rohreihenfolge)
+    // Marker (Route-Reihenfolge, oder Rohreihenfolge)
     const order = route.length ? route : [...Array(points.length).keys()];
-    const latlngs = order.map(i => [points[i].y, points[i].x]);
+    const latlngsStraight = order.map(i => [points[i].y, points[i].x]);
 
     // Marker + Popups
     order.forEach((idx, pos) => {
@@ -566,14 +578,87 @@
           : `x ${p.x.toFixed(2)}, y ${p.y.toFixed(2)}`}`);
     });
 
-    // Route zeichnen
-    const path = latlngs.slice();
-    if (roundtrip && path.length > 1) path.push(path[0]);
-    lineLayer = L.polyline(path, { weight: 3 }).addTo(markerGroup);
+    // Polyline: OSRM oder straight
+    if (routeMode === 'osrm' && osrmGeometry && osrmGeometry.length) {
+      lineLayer = L.polyline(osrmGeometry, { weight: 4 }).addTo(markerGroup);
+    } else {
+      const path = latlngsStraight.slice();
+      if (roundtrip && path.length > 1) path.push(path[0]);
+      lineLayer = L.polyline(path, { weight: 3 }).addTo(markerGroup);
+    }
 
     if (fit) {
-      const bounds = L.latLngBounds(path.length ? path : latlngs);
+      const bounds = lineLayer.getBounds();
       if (bounds.isValid()) map.fitBounds(bounds.pad(0.15));
+    }
+  }
+
+  // ---------- OSRM ----------
+  const OSRM_BASE = 'https://router.project-osrm.org';
+
+  function osrmRouteURL(sequence) {
+    // sequence: [[lon,lat], ...]
+    const coords = sequence.map(([lon,lat]) => `${lon},${lat}`).join(';');
+    const params = new URLSearchParams({
+      overview: 'full',
+      geometries: 'geojson',
+      annotations: 'false',
+      steps: 'false',
+      alternatives: 'false'
+    });
+    return `${OSRM_BASE}/route/v1/driving/${coords}?${params.toString()}`;
+    // Tipp: Für produktive Nutzung besser eigener OSRM-Server oder anderer Routingdienst.
+  }
+
+  async function computeOsrmForCurrentRoute() {
+    osrmDistanceMeters = null;
+    osrmGeometry = null;
+
+    if (!route.length || metric !== 'haversine') {
+      // falsches Koordinatensystem
+      if (routeMode === 'osrm') showToast('OSRM benötigt Lat/Lon (Haversine).', { warn:true });
+      setStats({});
+      updateExplanation({
+        methodKey: algoSelect.value,
+        improveKey: improveSelect.value,
+        metricKey: metricSelect.value
+      });
+      if (mapVisible) updateMap();
+      return;
+    }
+
+    const coords = route.map(i => [points[i].x, points[i].y]);
+    if (roundtrip && route.length > 1) coords.push([points[route[0]].x, points[route[0]].y]);
+
+    try {
+      const url = osrmRouteURL(coords);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`OSRM HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data || data.code !== 'Ok' || !data.routes || !data.routes.length) {
+        throw new Error('OSRM: keine Route gefunden');
+      }
+      const r = data.routes[0];
+      osrmDistanceMeters = r.distance || null;
+      // GeoJSON coords sind [lon,lat]; Leaflet erwartet [lat,lon]
+      osrmGeometry = (r.geometry && r.geometry.coordinates)
+        ? r.geometry.coordinates.map(([lon,lat]) => [lat,lon])
+        : null;
+
+      setStats({});
+      updateExplanation({
+        methodKey: algoSelect.value,
+        improveKey: improveSelect.value,
+        metricKey: metricSelect.value
+      });
+      if (mapVisible) updateMap();
+      showToast('OSRM-Route berechnet.', { ok:true });
+    } catch (e) {
+      osrmDistanceMeters = null;
+      osrmGeometry = null;
+      setStats({});
+      if (mapVisible) updateMap();
+      showToast(`OSRM-Fehler: ${e.message}`, { err:true });
     }
   }
 
@@ -613,6 +698,16 @@
 
   function exportJSON() {
     if (!route.length) return;
+    // Bevorzugt OSRM-Geometrie, sonst Punktfolge
+    if (routeMode === 'osrm' && osrmGeometry) {
+      const gj = {
+        type: 'Feature',
+        properties: { name: 'TSP Route (OSRM)', metric, roundtrip, routing: 'osrm' },
+        geometry: { type: 'LineString', coordinates: osrmGeometry.map(([lat,lon])=>[lon,lat]) }
+      };
+      download('route.json', JSON.stringify(gj, null, 2), 'application/json');
+      return;
+    }
     const arr = route.map(i => points[i]);
     if (roundtrip && route.length > 1) arr.push(points[route[0]]);
     download('route.json', JSON.stringify(arr, null, 2), 'application/json');
@@ -620,6 +715,23 @@
 
   function exportGeoJSON() {
     if (!route.length) return;
+    if (routeMode === 'osrm' && osrmGeometry) {
+      const gj = {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            properties: { name: 'TSP Route (OSRM)', metric, roundtrip, routing: 'osrm' },
+            geometry: {
+              type: 'LineString',
+              coordinates: osrmGeometry.map(([lat,lon])=>[lon,lat])
+            }
+          }
+        ]
+      };
+      download('route.geojson', JSON.stringify(gj, null, 2), 'application/geo+json');
+      return;
+    }
     const coords = route.map(i => [points[i].x, points[i].y]);
     if (roundtrip && route.length > 1) coords.push([points[route[0]].x, points[route[0]].y]);
     const gj = {
@@ -627,7 +739,7 @@
       features: [
         {
           type: 'Feature',
-          properties: { name: 'TSP Route', metric, roundtrip },
+          properties: { name: 'TSP Route', metric, roundtrip, routing: 'straight' },
           geometry: { type: 'LineString', coordinates: coords }
         }
       ]
@@ -637,8 +749,18 @@
 
   function exportGPX() {
     if (!route.length) return;
-    if (metric !== 'haversine') {
-      showToast('GPX ist für Lat/Lon gedacht (Haversine). Export erfolgt dennoch mit x/y als lon/lat.', { warn:true });
+    if (routeMode === 'osrm' && osrmGeometry) {
+      const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="TSP Routenplaner" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>TSP Route (OSRM)</name>
+    <trkseg>
+${osrmGeometry.map(([lat,lon]) => `      <trkpt lat="${lat}" lon="${lon}"></trkpt>`).join('\n')}
+    </trkseg>
+  </trk>
+</gpx>`;
+      download('route.gpx', gpx, 'application/gpx+xml');
+      return;
     }
     const seq = route.map(i => points[i]);
     if (roundtrip && route.length > 1) seq.push(points[route[0]]);
@@ -655,9 +777,15 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
   }
 
   // ---------- Actions ----------
+  function clearOsrmCache() {
+    osrmDistanceMeters = null;
+    osrmGeometry = null;
+  }
+
   function applyPoints(newPts, {gridSnap=0}={}) {
     points = snapToGrid(toXYArray(newPts), gridSnap);
     route = [];
+    clearOsrmCache();
     fitView();
     setStats();
     updateExplanation({
@@ -689,10 +817,18 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     reader.readAsText(file, 'utf-8');
   }
 
-  function solve() {
+  async function solve() {
     if (points.length < 2) { showToast('Bitte zuerst mindestens 2 Punkte eingeben.', { warn:true }); return; }
     metric = metricSelect.value;
     roundtrip = !!chkRoundtrip.checked;
+    routeMode = (routeModeSelect?.value || 'straight');
+
+    // OSRM braucht Haversine/LatLon
+    if (routeMode === 'osrm' && metric !== 'haversine') {
+      metric = 'haversine';
+      metricSelect.value = 'haversine';
+      showToast('OSRM benötigt Lat/Lon. Metrik auf Haversine gesetzt.', { warn:true });
+    }
 
     const seedVal = Number($('#seed')?.value);
     seeded = Number.isFinite(seedVal) ? (seedVal >>> 0) : null;
@@ -720,21 +856,19 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     }
 
     route = initial;
+    clearOsrmCache();
     const dt = performance.now() - t0;
     setStats({ method: algoLabel(algo), timeMs: dt });
     render();
-
     updateExplanation({
       methodKey: algoSelect.value,
       improveKey: improveSelect.value,
       metricKey: metricSelect.value
     });
-
     if (mapVisible) updateMap(true);
 
-    if (improveSelect.value === '2opt') {
-      twoOptImprove(false);
-    }
+    if (routeMode === 'osrm') await computeOsrmForCurrentRoute();
+    if (improveSelect.value === '2opt') await twoOptImprove(false);
   }
 
   function algoLabel(a) {
@@ -745,6 +879,7 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
 
   function resetAll() {
     route = [];
+    clearOsrmCache();
     render();
     setStats();
     updateExplanation({
@@ -762,10 +897,7 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     url.searchParams.set('format', 'jsonv2');
     url.searchParams.set('limit', '1');
     url.searchParams.set('q', query);
-
-    const res = await fetch(url.toString(), {
-      headers: { 'Accept-Language': 'de' }
-    });
+    const res = await fetch(url.toString(), { headers: { 'Accept-Language': 'de' } });
     if (!res.ok) throw new Error(`Geocoding-Fehler (${res.status})`);
     const data = await res.json();
     if (!Array.isArray(data) || data.length === 0) return null;
@@ -796,7 +928,6 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       } catch (e) {
         showToast(`⚠️ Fehler bei „${q}“: ${e.message}`, { err:true });
       }
-      // höfliche kurze Pause (Rate-Limit)
       await new Promise(r => setTimeout(r, 600));
     }
 
@@ -805,7 +936,6 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       return;
     }
 
-    // In Textfeld übernehmen (CSV) & anwenden
     const header = 'lat,lon,label\n';
     const csv = header + results.map(r => `${r.lat},${r.lon},"${r.label.replace(/"/g,'""')}"`).join('\n');
     coordsInput.value = csv;
@@ -813,7 +943,6 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     parseFromTextarea();
     showToast(`Geocoding fertig: ${results.length} Treffer.`, { ok:true });
 
-    // Karte automatisch sichtbar machen
     if (!mapVisible) toggleMap(true);
   }
 
@@ -847,7 +976,7 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     if (f) parseFromFile(f);
   });
 
-  btnSolve?.addEventListener('click', solve);
+  btnSolve?.addEventListener('click', () => { solve(); });
   btnImprove?.addEventListener('click', () => twoOptImprove(false));
   btnStep?.addEventListener('click', () => twoOptImprove(true));
   btnStop?.addEventListener('click', () => { stopFlag = true; improving = false; showToast('Stop angefordert.'); });
@@ -880,9 +1009,10 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
   linkAbout?.addEventListener('click', (e)=>{ e.preventDefault(); aboutDialog.showModal(); });
   yearEl.textContent = new Date().getFullYear();
 
-  // Live-Update Erklärungen / Roundtrip
+  // Live-Updates: Metrik / Optionen / Routing
   metricSelect.addEventListener('change', () => {
     metric = metricSelect.value;
+    clearOsrmCache();
     updateExplanation({
       methodKey: algoSelect.value,
       improveKey: improveSelect.value,
@@ -905,9 +1035,27 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       metricKey: metricSelect.value
     });
   });
-  chkRoundtrip.addEventListener('change', () => {
+  chkRoundtrip.addEventListener('change', async () => {
     roundtrip = !!chkRoundtrip.checked;
     render();
+    clearOsrmCache();
+    if (routeMode === 'osrm' && route.length) await computeOsrmForCurrentRoute();
+    setStats({});
+    updateExplanation({
+      methodKey: algoSelect.value,
+      improveKey: improveSelect.value,
+      metricKey: metricSelect.value
+    });
+  });
+  routeModeSelect.addEventListener('change', async () => {
+    routeMode = routeModeSelect.value || 'straight';
+    if (routeMode === 'osrm' && metric !== 'haversine') {
+      metric = 'haversine';
+      metricSelect.value = 'haversine';
+      showToast('OSRM benötigt Lat/Lon. Metrik auf Haversine gesetzt.', { warn:true });
+    }
+    clearOsrmCache();
+    if (routeMode === 'osrm' && route.length) await computeOsrmForCurrentRoute();
     setStats({});
     updateExplanation({
       methodKey: algoSelect.value,
