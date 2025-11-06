@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TSP Routenplaner</title>
+  <meta name="description" content="Koordinaten in die beste Reihenfolge bringen (TSP) – mit Heuristiken und 2-Opt-Verbesserung." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>🗺️ TSP Routenplaner</h1>
+    <p class="subtitle">Füge Punkte hinzu, wähle eine Methode und finde eine gute Route.</p>
+  </header>
+
+  <main class="app-main" role="main">
+    <!-- Sidebar: Eingaben & Kontrolle -->
+    <aside class="panel left" aria-label="Eingaben und Optionen">
+      <section class="card">
+        <h2>Punkte eingeben</h2>
+
+        <label for="coordsInput" class="hint">
+          Ein Punkt pro Zeile. Format: <code>lat, lon</code> oder <code>x, y</code>
+        </label>
+        <textarea id="coordsInput" rows="8" placeholder="z. B.&#10;52.5200, 13.4050&#10;48.8566, 2.3522&#10;51.5074, -0.1278"></textarea>
+
+        <div class="row gap">
+          <button id="btnParse">➕ Punkte übernehmen</button>
+          <button id="btnClear">🧹 Leeren</button>
+        </div>
+
+        <div class="row gap">
+          <label class="file">
+            <input id="fileInput" type="file" accept=".csv,.txt,.json" />
+            <span>📂 Datei laden</span>
+          </label>
+          <button id="btnSample">🎲 Demo-Punkte</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Optionen</h2>
+
+        <div class="field">
+          <label for="metricSelect">Distanzmetrik</label>
+          <select id="metricSelect">
+            <option value="euclidean">Euklidisch (x/y)</option>
+            <option value="haversine">Haversine (Lat/Lon)</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="algoSelect">Startlösung</label>
+          <select id="algoSelect">
+            <option value="nearest">Nearest Neighbor</option>
+            <option value="insertion">Cheapest Insertion</option>
+            <option value="random">Zufällige Tour</option>
+          </select>
+        </div>
+
+        <div class="field inline">
+          <input type="checkbox" id="chkFixStart" />
+          <label for="chkFixStart">Startpunkt fixieren</label>
+        </div>
+
+        <div class="field">
+          <label for="startIndex">Startindex (optional)</label>
+          <input type="number" id="startIndex" min="0" step="1" placeholder="0" />
+        </div>
+
+        <div class="field">
+          <label for="improveSelect">Verbesserung</label>
+          <select id="improveSelect">
+            <option value="2opt">2-Opt</option>
+            <option value="none">Keine</option>
+          </select>
+        </div>
+
+        <div class="row gap">
+          <button id="btnSolve" class="primary">🚀 Lösen</button>
+          <button id="btnImprove">🔁 Verbessern</button>
+        </div>
+
+        <div class="row gap">
+          <button id="btnStep">⏭️ Schritt</button>
+          <button id="btnStop">⏹️ Stop</button>
+          <button id="btnReset">♻️ Reset</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Export</h2>
+        <div class="row wrap gap">
+          <button id="btnExportCSV">CSV</button>
+          <button id="btnExportJSON">JSON</button>
+          <button id="btnExportGeoJSON">GeoJSON</button>
+          <button id="btnExportGPX">GPX</button>
+        </div>
+      </section>
+
+      <section class="card compact">
+        <details>
+          <summary>Erweiterte Einstellungen</summary>
+          <div class="field">
+            <label for="seed">Zufalls-Seed (optional)</label>
+            <input id="seed" type="number" placeholder="z. B. 42" />
+          </div>
+          <div class="field">
+            <label for="anneal">Simulated Annealing (Beta)</label>
+            <input id="anneal" type="checkbox" />
+          </div>
+          <div class="field">
+            <label for="gridSnap">Auf Raster runden</label>
+            <input id="gridSnap" type="number" min="0" step="1" value="0" />
+            <small class="hint">0 = aus</small>
+          </div>
+        </details>
+      </section>
+    </aside>
+
+    <!-- Hauptbereich: Karte/Canvas & Ergebnisse -->
+    <section class="panel right" aria-label="Visualisierung und Ergebnisse">
+      <section class="card">
+        <h2>Visualisierung</h2>
+        <div class="canvas-wrap">
+          <!-- Hinweis: Wir zeichnen Punkte & Kanten in app.js -->
+          <canvas id="routeCanvas" width="900" height="600" aria-label="Routen-Canvas"></canvas>
+          <div id="canvasOverlay" class="overlay" aria-live="polite" aria-atomic="true"></div>
+        </div>
+
+        <div class="row gap">
+          <button id="btnFit">🖼️ Anpassen</button>
+          <button id="btnToggleLabels">🔤 Labels</button>
+          <button id="btnToggleNumbers">🔢 Indizes</button>
+          <button id="btnToggleCoords">📍 Koordinaten</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Ergebnis</h2>
+        <div class="stats">
+          <div><strong>Punkte:</strong> <span id="statNodes">0</span></div>
+          <div><strong>Gesamtdistanz:</strong> <span id="statDistance">–</span></div>
+          <div><strong>Berechnungszeit:</strong> <span id="statTime">–</span></div>
+          <div><strong>Methode:</strong> <span id="statMethod">–</span></div>
+        </div>
+
+        <div class="route-list-wrap">
+          <h3>Reihenfolge</h3>
+          <ol id="routeList" class="route-list"></ol>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span>© <span id="year"></span> TSP Routenplaner • <a href="#" id="linkAbout">Über</a></span>
+  </footer>
+
+  <!-- Modale & Toasts -->
+  <dialog id="aboutDialog" aria-labelledby="aboutTitle">
+    <h2 id="aboutTitle">Über dieses Tool</h2>
+    <p>Dieses Tool nutzt Heuristiken (Nearest Neighbor, Cheapest Insertion) und 2-Opt zur Verbesserung. Für Lat/Lon wird die Haversine-Distanz unterstützt.</p>
+    <form method="dialog">
+      <button>Schließen</button>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
