@@ -1,8 +1,9 @@
 /* ================================
    TSP Routenplaner – app.js
    CSV/JSON-Import, Heuristiken, 2-Opt,
-   Haversine/Euklid, Canvas-Render, Exporte
-   + Mini-Erklärungen im Ergebnis
+   Haversine/Euklid, Canvas-Render, Exporte,
+   Mini-Erklärungen, Adress-Geocoding & Leaflet-Karte,
+   Rundtour (Start = Ziel)
    ================================ */
 
 (() => {
@@ -10,16 +11,19 @@
   const $ = (sel) => document.querySelector(sel);
 
   const coordsInput = $('#coordsInput');
+  const addrInput   = $('#addrInput');
   const fileInput   = $('#fileInput');
   const btnParse    = $('#btnParse');
   const btnClear    = $('#btnClear');
   const btnSample   = $('#btnSample');
+  const btnGeocode  = $('#btnGeocode');
 
   const metricSelect = $('#metricSelect');
   const algoSelect   = $('#algoSelect');
   const chkFixStart  = $('#chkFixStart');
   const startIndexEl = $('#startIndex');
   const improveSelect= $('#improveSelect');
+  const chkRoundtrip = $('#chkRoundtrip');
 
   const btnSolve    = $('#btnSolve');
   const btnImprove  = $('#btnImprove');
@@ -36,6 +40,7 @@
   const btnToggleLabels  = $('#btnToggleLabels');
   const btnToggleNumbers = $('#btnToggleNumbers');
   const btnToggleCoords  = $('#btnToggleCoords');
+  const btnToggleMap     = $('#btnToggleMap');
 
   const statNodes    = $('#statNodes');
   const statDistance = $('#statDistance');
@@ -52,48 +57,53 @@
   const canvas = $('#routeCanvas');
   const ctx = canvas.getContext('2d', { alpha: true });
   const overlay = $('#canvasOverlay');
-  const explainEl = document.querySelector('#explainText'); // NEU: Erklärfeld
+  const explainEl = document.querySelector('#explainText');
+
+  const mapEl = $('#map');
 
   // ---------- State ----------
-  let points = [];          // [{x,y, label?}]
+  let points = [];          // [{x,y,label?}]  (x=lon oder x, y=lat oder y)
   let route = [];           // [indices]
   let metric = 'euclidean'; // 'euclidean' | 'haversine'
   let fixedStart = false;
   let fixedStartIndex = null;
+  let roundtrip = false;
   let renderOptions = { labels: false, numbers: true, coords: false };
 
-  // 2-Opt Step/Stop
+  // 2-Opt
   let improving = false;
   let stopFlag = false;
-  let last2OptState = null; // {i,j, improved}
 
-  // Drawing transform cache
+  // Drawing transform cache (Canvas)
   let transform = { scale: 1, tx: 0, ty: 0, padding: 24 };
 
   // RNG (optional seed)
   let seeded = null;
   const rng = () => (seeded = (seeded * 1664525 + 1013904223) % 4294967296) / 4294967296;
 
-  // ---------- Kurze Erklärtexte ----------
+  // Leaflet
+  let map, markerGroup, lineLayer;
+  let mapVisible = false;
+
+  // ---------- Erklärtexte ----------
   const DESCRIPTIONS = {
     metric: {
       euclidean: 'Euklidische Distanz (x/y) – geeignet für flache Karten/Konstruktionspunkte.',
       haversine: 'Haversine (Lat/Lon) – Kugelabstand auf der Erde in Metern/Kilometern.'
     },
     algo: {
-      nearest: 'Nearest Neighbor: startet an einem Punkt und nimmt jeweils den nächstgelegenen unbesuchten Punkt (greedy, sehr schnell, kann lokale Minima haben).',
-      insertion: 'Cheapest Insertion: baut die Route schrittweise, indem der jeweils günstigste Einfügeplatz gewählt wird (oft bessere Starttour).',
-      random: 'Zufällige Tour: dient als Baseline/Benchmark; Qualität variiert stark.'
+      nearest: 'Nearest Neighbor: startet am Startpunkt und wählt jeweils den nächstgelegenen unbesuchten Punkt.',
+      insertion: 'Cheapest Insertion: fügt Punkte an der günstigsten Stelle in die Tour ein.',
+      random: 'Zufällige Tour: Baseline/Benchmark; Qualität variiert stark.'
     },
     improve: {
-      '2opt': '2-Opt: tauscht Kantenpaare lokal aus, solange die Gesamtdistanz sinkt (schnell & oft großer Gewinn).',
+      '2opt': '2-Opt: tauscht Kantenpaare lokal aus, solange die Gesamtdistanz sinkt.',
       'none': 'Keine Verbesserung: reine Startheuristik ohne lokale Optimierung.'
     }
   };
 
   // ---------- Utils ----------
   const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-  const sum = (arr) => arr.reduce((a,b)=>a+b,0);
 
   function showToast(msg, { ok=false, warn=false, err=false } = {}) {
     toast.textContent = msg;
@@ -104,8 +114,8 @@
 
   function setStats({ method='–', timeMs=null } = {}) {
     statNodes.textContent = points.length;
-    statMethod.textContent = method;
-    statDistance.textContent = route.length ? formatDistance(tourLength(route, metric)) : '–';
+    statMethod.textContent = method + (roundtrip ? ' (Rundtour)' : '');
+    statDistance.textContent = route.length ? formatDistance(tourLength(route, metric, roundtrip)) : '–';
     statTime.textContent = timeMs==null ? '–' : `${timeMs.toFixed(1)} ms`;
   }
 
@@ -114,12 +124,12 @@
     const m = DESCRIPTIONS.metric[metricKey] ?? '';
     const a = DESCRIPTIONS.algo[methodKey] ?? methodKey;
     const i = DESCRIPTIONS.improve[improveKey] ?? '';
-    const distText = route.length ? `Aktuelle Gesamtdistanz: ${formatDistance(tourLength(route, metric))}.` : '';
-    explainEl.textContent = `${a}${improveKey !== 'none' ? ' + ' + i : ''} • ${m} ${distText}`;
+    const distText = route.length ? `Aktuelle Gesamtdistanz: ${formatDistance(tourLength(route, metric, roundtrip))}.` : '';
+    const rText = roundtrip ? ' • Rundtour (Start=Ziel).' : '';
+    explainEl.textContent = `${a}${improveKey !== 'none' ? ' + ' + i : ''} • ${m}${rText} ${distText}`;
   }
 
   function formatDistance(d) {
-    // Bei Haversine: Meter/Kilometer. Euklidisch: Einheitenlos -> 2–3 Nachkommastellen
     if (metric === 'haversine') {
       if (d >= 1000) return `${(d/1000).toFixed(2)} km`;
       return `${d.toFixed(1)} m`;
@@ -127,12 +137,7 @@
     return d.toFixed(3);
   }
 
-  function hasLatLonLike(p) {
-    return p.lat !== undefined && p.lon !== undefined;
-  }
-
   function toXYArray(srcPoints) {
-    // Wenn lat/lon, dann in {x: lon, y: lat}
     return srcPoints.map((p, i) => {
       if ('lat' in p && 'lon' in p) {
         return { x: +p.lon, y: +p.lat, label: p.label ?? `P${i}` };
@@ -143,7 +148,6 @@
       if ('x' in p && 'y' in p) {
         return { x: +p.x, y: +p.y, label: p.label ?? `P${i}` };
       }
-      // array [a,b] -> interpret as x,y (oder lat,lon – Metrik wählt später)
       if (Array.isArray(p) && p.length >= 2) {
         return { x: +p[0], y: +p[1], label: `P${i}` };
       }
@@ -160,41 +164,37 @@
     }));
   }
 
-  // ---------- Distance Metrics ----------
+  // ---------- Distanz ----------
   function dist(i, j, metricMode) {
     const a = points[i], b = points[j];
     if (metricMode === 'haversine') {
-      // a.y=lat, a.x=lon
       return haversine(a.y, a.x, b.y, b.x);
     }
-    // Euclidean
     const dx = a.x - b.x;
     const dy = a.y - b.y;
     return Math.hypot(dx, dy);
   }
 
-  function tourLength(order, metricMode) {
+  function tourLength(order, metricMode, isRoundtrip=false) {
     if (order.length < 2) return 0;
     let s = 0;
     for (let i = 0; i < order.length - 1; i++) s += dist(order[i], order[i+1], metricMode);
-    // Offene Tour (kein Rücksprung)
+    if (isRoundtrip && order.length > 1) s += dist(order[order.length-1], order[0], metricMode);
     return s;
   }
 
-  // Haversine (Meter)
   function haversine(lat1, lon1, lat2, lon2) {
-    const R = 6371e3; // Earth radius in meters
+    const R = 6371e3;
     const toRad = (d) => d * Math.PI / 180;
     const φ1 = toRad(lat1), φ2 = toRad(lat2);
     const Δφ = toRad(lat2 - lat1);
     const Δλ = toRad(lon2 - lon1);
-
     const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   }
 
-  // ---------- Heuristics ----------
+  // ---------- Heuristiken ----------
   function nearestNeighbor(start=0) {
     const n = points.length;
     if (n === 0) return [];
@@ -203,7 +203,6 @@
     let current = clamp(start, 0, n-1);
     tour.push(current);
     visited[current] = true;
-
     for (let step = 1; step < n; step++) {
       let best = -1, bestD = Infinity;
       for (let j = 0; j < n; j++) {
@@ -226,7 +225,6 @@
     const remaining = new Set([...Array(n).keys()]);
     const s = clamp(start, 0, n-1);
 
-    // Start mit kleinem Zyklus: [s, k]
     remaining.delete(s);
     let k = s === 0 ? 1 : 0;
     remaining.delete(k);
@@ -242,7 +240,7 @@
         let localBestPos = -1;
         for (let i = 0; i < tour.length; i++) {
           const a = tour[i];
-          const b = tour[(i + 1) % tour.length]; // zyklisch für Bewertung
+          const b = tour[(i + 1) % tour.length];
           const inc = dist(a, v, metric) + dist(v, b, metric) - dist(a, b, metric);
           if (inc < localBestInc) { localBestInc = inc; localBestPos = i + 1; }
         }
@@ -255,7 +253,7 @@
       tour.splice(bestPos, 0, bestNode);
       remaining.delete(bestNode);
     }
-    return tour; // Offene Route belassen
+    return tour;
   }
 
   function randomTour() {
@@ -285,7 +283,7 @@
         const gain = oldLen - newLen;
 
         if (gain > bestGain + 1e-12) {
-          bestGain = gain; bestI = b; bestK = c; // Reverse Segment [i+1..k-1]
+          bestGain = gain; bestI = b; bestK = c;
         }
       }
     }
@@ -314,21 +312,21 @@
       if (res.improved) {
         route = res.order;
         render();
-        setStats({ method: `${statMethod.textContent} + 2-Opt`, timeMs: performance.now()-t0 });
+        setStats({ method: `${statMethod.textContent}`, timeMs: performance.now()-t0 });
         updateExplanation({
           methodKey: algoSelect.value,
           improveKey: '2opt',
           metricKey: metricSelect.value
         });
 
+        if (mapVisible) updateMap();
+
         if (stepMode) {
-          last2OptState = { improved: true };
           showToast(`2-Opt Schritt: Δ = −${formatDistance(res.gain)} ✓`, { ok:true });
-          break; // nur ein Schritt
+          break;
         }
         await new Promise(r => setTimeout(r, 0));
       } else {
-        last2OptState = { improved: false };
         if (stepMode) {
           showToast('2-Opt: keine weitere Verbesserung gefunden.', { warn:true });
         } else {
@@ -350,13 +348,10 @@
         const arr = Array.isArray(data) ? data : (Array.isArray(data.points) ? data.points : null);
         if (!arr) throw new Error('JSON nicht erkannt');
         return toXYArray(arr);
-      } catch (e) {
-        // fällt zurück auf CSV
-      }
+      } catch (e) { /* CSV-Fallback */ }
     }
     const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     if (!lines.length) return [];
-
     const headerTokens = tokenizeCSV(lines[0]);
     const headerLower = headerTokens.map(s => s.toLowerCase());
     const headerLooksLike =
@@ -365,7 +360,6 @@
       headerLower.includes('x') || headerLower.includes('y');
 
     const rows = headerLooksLike ? lines.slice(1) : lines;
-
     const out = [];
     for (const line of rows) {
       const toks = tokenizeCSV(line);
@@ -389,7 +383,7 @@
         const n2 = parseFloat(b);
         if (isFinite(n1) && isFinite(n2)) {
           const label = rest && rest.length ? rest.join(' ').trim() : `P${out.length}`;
-          out.push({ x: n2, y: n1, label }); // Standard: (lat,lon,label?) -> (x=lon, y=lat)
+          out.push({ x: n2, y: n1, label }); // (lat,lon,label?) -> (x=lon, y=lat)
         }
       }
     }
@@ -407,24 +401,14 @@
         if (ch === '"') {
           if (line[i+1] === '"') { cur += '"'; i++; }
           else inQuotes = false;
-        } else {
-          cur += ch;
-        }
+        } else cur += ch;
       } else {
-        if (ch === '"') {
-          inQuotes = true;
-        } else if (ch === ',' || ch === ';' || ch === '\t') {
-          push();
-        } else if (ch === ' ') {
+        if (ch === '"') inQuotes = true;
+        else if (ch === ',' || ch === ';' || ch === '\t') push();
+        else if (ch === ' ') {
           const next = line[i+1];
-          if (next === ' ' && cur === '') {
-            // skip führende Mehrfach-Spaces
-          } else {
-            cur += ch;
-          }
-        } else {
-          cur += ch;
-        }
+          if (next === ' ' && cur === '') { /* skip */ } else cur += ch;
+        } else cur += ch;
       }
       i++;
     }
@@ -432,7 +416,7 @@
     return result.map(s => s.trim()).filter(s => s.length>0);
   }
 
-  // ---------- Rendering ----------
+  // ---------- Rendering (Canvas) ----------
   function computeBounds(pts) {
     const xs = pts.map(p => p.x);
     const ys = pts.map(p => p.y);
@@ -482,6 +466,10 @@
       for (let i=1; i<route.length; i++) {
         const pt = worldToCanvas(points[route[i]]);
         ctx.lineTo(pt.cx, pt.cy);
+      }
+      if (roundtrip && route.length > 1) {
+        const back = worldToCanvas(points[route[0]]);
+        ctx.lineTo(back.cx, back.cy);
       }
       ctx.stroke();
     }
@@ -538,6 +526,55 @@
     if (!points.length) return;
     updateTransform();
     render();
+    if (mapVisible) updateMap(true);
+  }
+
+  // ---------- Leaflet ----------
+  function ensureMap() {
+    if (map) return;
+    map = L.map('map');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap-Mitwirkende'
+    }).addTo(map);
+    markerGroup = L.layerGroup().addTo(map);
+  }
+
+  function updateMap(fit=false) {
+    ensureMap();
+    markerGroup.clearLayers();
+    if (lineLayer) { lineLayer.remove(); lineLayer = null; }
+
+    if (!points.length) return;
+
+    // Warnung wenn Euklid-Koordinaten auf Karte
+    if (metric !== 'haversine') {
+      showToast('Hinweis: Karte erwartet Lat/Lon (Haversine). Euklidische Punkte werden ggf. falsch angezeigt.', { warn:true });
+    }
+
+    // Marker gemäß Route (oder Rohreihenfolge)
+    const order = route.length ? route : [...Array(points.length).keys()];
+    const latlngs = order.map(i => [points[i].y, points[i].x]);
+
+    // Marker + Popups
+    order.forEach((idx, pos) => {
+      const p = points[idx];
+      const label = p.label ?? `P${idx}`;
+      L.marker([p.y, p.x]).addTo(markerGroup)
+        .bindPopup(`<b>${pos+1}.</b> ${label}<br/>${metric==='haversine'
+          ? `lat ${p.y.toFixed(5)}, lon ${p.x.toFixed(5)}`
+          : `x ${p.x.toFixed(2)}, y ${p.y.toFixed(2)}`}`);
+    });
+
+    // Route zeichnen
+    const path = latlngs.slice();
+    if (roundtrip && path.length > 1) path.push(path[0]);
+    lineLayer = L.polyline(path, { weight: 3 }).addTo(markerGroup);
+
+    if (fit) {
+      const bounds = L.latLngBounds(path.length ? path : latlngs);
+      if (bounds.isValid()) map.fitBounds(bounds.pad(0.15));
+    }
   }
 
   // ---------- Export ----------
@@ -559,6 +596,12 @@
       const lab = p.label ?? '';
       return `${a},${b},${escapeCSV(lab)}`;
     });
+    if (roundtrip && route.length > 1) {
+      const p = points[route[0]];
+      const a = metric==='haversine' ? p.y : p.x;
+      const b = metric==='haversine' ? p.x : p.y;
+      lines.push(`${a},${b},${escapeCSV(p.label ?? '')}`);
+    }
     download('route.csv', header + lines.join('\n'), 'text/csv;charset=utf-8');
   }
 
@@ -571,21 +614,20 @@
   function exportJSON() {
     if (!route.length) return;
     const arr = route.map(i => points[i]);
+    if (roundtrip && route.length > 1) arr.push(points[route[0]]);
     download('route.json', JSON.stringify(arr, null, 2), 'application/json');
   }
 
   function exportGeoJSON() {
     if (!route.length) return;
-    const coords = route.map(i => {
-      const p = points[i];
-      return [p.x, p.y];
-    });
+    const coords = route.map(i => [points[i].x, points[i].y]);
+    if (roundtrip && route.length > 1) coords.push([points[route[0]].x, points[route[0]].y]);
     const gj = {
       type: 'FeatureCollection',
       features: [
         {
           type: 'Feature',
-          properties: { name: 'TSP Route', metric },
+          properties: { name: 'TSP Route', metric, roundtrip },
           geometry: { type: 'LineString', coordinates: coords }
         }
       ]
@@ -598,13 +640,14 @@
     if (metric !== 'haversine') {
       showToast('GPX ist für Lat/Lon gedacht (Haversine). Export erfolgt dennoch mit x/y als lon/lat.', { warn:true });
     }
-    const pts = route.map(i => points[i]);
+    const seq = route.map(i => points[i]);
+    if (roundtrip && route.length > 1) seq.push(points[route[0]]);
     const gpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="TSP Routenplaner" xmlns="http://www.topografix.com/GPX/1/1">
   <trk>
     <name>TSP Route</name>
     <trkseg>
-${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
+${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     </trkseg>
   </trk>
 </gpx>`;
@@ -622,6 +665,7 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       improveKey: improveSelect.value,
       metricKey: metricSelect.value
     });
+    if (mapVisible) updateMap(true);
     showToast(`${points.length} Punkt(e) geladen.`, { ok:true });
   }
 
@@ -648,6 +692,7 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
   function solve() {
     if (points.length < 2) { showToast('Bitte zuerst mindestens 2 Punkte eingeben.', { warn:true }); return; }
     metric = metricSelect.value;
+    roundtrip = !!chkRoundtrip.checked;
 
     const seedVal = Number($('#seed')?.value);
     seeded = Number.isFinite(seedVal) ? (seedVal >>> 0) : null;
@@ -666,9 +711,7 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
 
     if (useFixed) {
       const pos = initial.indexOf(startIdx);
-      if (pos > 0) {
-        initial = initial.slice(pos).concat(initial.slice(0, pos));
-      }
+      if (pos > 0) initial = initial.slice(pos).concat(initial.slice(0, pos));
       fixedStart = true;
       fixedStartIndex = startIdx;
     } else {
@@ -686,6 +729,8 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       improveKey: improveSelect.value,
       metricKey: metricSelect.value
     });
+
+    if (mapVisible) updateMap(true);
 
     if (improveSelect.value === '2opt') {
       twoOptImprove(false);
@@ -707,7 +752,69 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       improveKey: improveSelect.value,
       metricKey: metricSelect.value
     });
+    if (mapVisible) updateMap(true);
     showToast('Zurückgesetzt.');
+  }
+
+  // ---------- Geocoding (Nominatim) ----------
+  async function geocodeOne(query) {
+    const url = new URL('https://nominatim.openstreetmap.org/search');
+    url.searchParams.set('format', 'jsonv2');
+    url.searchParams.set('limit', '1');
+    url.searchParams.set('q', query);
+
+    const res = await fetch(url.toString(), {
+      headers: { 'Accept-Language': 'de' }
+    });
+    if (!res.ok) throw new Error(`Geocoding-Fehler (${res.status})`);
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) return null;
+    const hit = data[0];
+    return {
+      lat: parseFloat(hit.lat),
+      lon: parseFloat(hit.lon),
+      label: hit.display_name || query
+    };
+  }
+
+  async function geocodeAddresses() {
+    const lines = (addrInput.value || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (!lines.length) { showToast('Keine Adressen eingegeben.', { warn:true }); return; }
+
+    showToast(`Geocoding gestartet (${lines.length})…`);
+    const results = [];
+    for (let i=0; i<lines.length; i++) {
+      const q = lines[i];
+      try {
+        const res = await geocodeOne(q);
+        if (res) {
+          results.push(res);
+          showToast(`✓ ${q}`, { ok:true });
+        } else {
+          showToast(`❓ Keine Treffer: ${q}`, { warn:true });
+        }
+      } catch (e) {
+        showToast(`⚠️ Fehler bei „${q}“: ${e.message}`, { err:true });
+      }
+      // höfliche kurze Pause (Rate-Limit)
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    if (!results.length) {
+      showToast('Keine Adressen geocodiert.', { warn:true });
+      return;
+    }
+
+    // In Textfeld übernehmen (CSV) & anwenden
+    const header = 'lat,lon,label\n';
+    const csv = header + results.map(r => `${r.lat},${r.lon},"${r.label.replace(/"/g,'""')}"`).join('\n');
+    coordsInput.value = csv;
+    metricSelect.value = 'haversine';
+    parseFromTextarea();
+    showToast(`Geocoding fertig: ${results.length} Treffer.`, { ok:true });
+
+    // Karte automatisch sichtbar machen
+    if (!mapVisible) toggleMap(true);
   }
 
   // ---------- Events ----------
@@ -729,14 +836,11 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       {lat:45.4642, lon:9.1900, label:'Mailand'},
     ];
     coordsInput.value = 'lat,lon,label\n' + demo.map(p=>`${p.lat},${p.lon},${p.label}`).join('\n');
-    parseFromTextarea();
     metricSelect.value = 'haversine';
-    updateExplanation({
-      methodKey: algoSelect.value,
-      improveKey: improveSelect.value,
-      metricKey: metricSelect.value
-    });
+    parseFromTextarea();
   });
+
+  btnGeocode?.addEventListener('click', geocodeAddresses);
 
   fileInput?.addEventListener('change', (e) => {
     const f = e.target.files?.[0];
@@ -755,14 +859,28 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
   btnExportGPX?.addEventListener('click', exportGPX);
 
   btnFit?.addEventListener('click', fitView);
-  btnToggleLabels?.addEventListener('click', () => { renderOptions.labels = !renderOptions.labels; render(); });
-  btnToggleNumbers?.addEventListener('click', () => { renderOptions.numbers = !renderOptions.numbers; render(); });
-  btnToggleCoords?.addEventListener('click', () => { renderOptions.coords = !renderOptions.coords; render(); });
+  btnToggleLabels?.addEventListener('click', () => { renderOptions.labels = !renderOptions.labels; render(); if (mapVisible) updateMap(); });
+  btnToggleNumbers?.addEventListener('click', () => { renderOptions.numbers = !renderOptions.numbers; render(); if (mapVisible) updateMap(); });
+  btnToggleCoords?.addEventListener('click', () => { renderOptions.coords = !renderOptions.coords; render(); if (mapVisible) updateMap(); });
+
+  function toggleMap(forceVisible=null){
+    if (forceVisible !== null) mapVisible = !!forceVisible;
+    else mapVisible = !mapVisible;
+    mapEl.style.display = mapVisible ? '' : 'none';
+    if (mapVisible) {
+      ensureMap();
+      setTimeout(()=> {
+        map.invalidateSize();
+        updateMap(true);
+      }, 0);
+    }
+  }
+  btnToggleMap?.addEventListener('click', () => toggleMap());
 
   linkAbout?.addEventListener('click', (e)=>{ e.preventDefault(); aboutDialog.showModal(); });
   yearEl.textContent = new Date().getFullYear();
 
-  // Live-Update der Erklärungen bei Optionswechsel
+  // Live-Update Erklärungen / Roundtrip
   metricSelect.addEventListener('change', () => {
     metric = metricSelect.value;
     updateExplanation({
@@ -770,7 +888,8 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       improveKey: improveSelect.value,
       metricKey: metricSelect.value
     });
-    render(); // Anzeige (Koordinatenformat) könnte sich ändern
+    render();
+    if (mapVisible) updateMap();
   });
   algoSelect.addEventListener('change', () => {
     updateExplanation({
@@ -786,6 +905,17 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
       metricKey: metricSelect.value
     });
   });
+  chkRoundtrip.addEventListener('change', () => {
+    roundtrip = !!chkRoundtrip.checked;
+    render();
+    setStats({});
+    updateExplanation({
+      methodKey: algoSelect.value,
+      improveKey: improveSelect.value,
+      metricKey: metricSelect.value
+    });
+    if (mapVisible) updateMap();
+  });
 
   // Initial
   fitView();
@@ -795,7 +925,7 @@ ${pts.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     metricKey: metricSelect.value
   });
 
-  // ---------- Bonus: Drag&Drop ----------
+  // Drag&Drop
   document.addEventListener('dragover', (e)=>{ e.preventDefault(); });
   document.addEventListener('drop', (e)=>{
     e.preventDefault();
