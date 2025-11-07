@@ -784,81 +784,91 @@ function printResult() {
     return;
   }
 
-  // Daten einsammeln
-  const now = new Date();
-  const dateStr = now.toLocaleString();
-  const methodText = statMethod.textContent || '–';
-  const distText = statDistance.textContent || '–';
+  // Reihenfolge bestimmen (Route oder Rohreihenfolge)
+  const order = route.length ? route.slice() : [...Array(points.length).keys()];
+  const includeReturn = !!(typeof chkRoundtrip !== 'undefined' && chkRoundtrip.checked);
+  if (includeReturn && order.length > 1) {
+    // Startpunkt ans Ende anhängen, damit die Rundtour explizit wird
+    order.push(order[0]);
+  }
+  // Falls du KEINE Wiederholung des Startpunkts möchtest:
+  // -> Zeile oben auskommentieren.
 
-  // Ergebnisliste aufbereiten (immer Label + Koordinate)
-  const rows = (route.length ? route : [...Array(points.length).keys()]).map((idx, pos) => {
+  // Liste aufbereiten
+  const items = order.map((idx, pos) => {
     const p = points[idx];
     const label = p.label ?? `P${idx}`;
-    const coord = (metric === 'haversine')
-      ? `lat ${p.y.toFixed(5)}, lon ${p.x.toFixed(5)}`
-      : `x ${p.x.toFixed(2)}, y ${p.y.toFixed(2)}`;
-    return `<li><strong>${pos+1}.</strong> ${escapeHTML(label)} <span style="opacity:.8">(${coord})</span></li>`;
-  }).join('');
+    const lat = p.y; // Achtung: y=lat, x=lon in unserem Modell
+    const lon = p.x;
+    return {
+      pos: pos + 1,
+      label,
+      lat,
+      lon,
+    };
+  });
 
-  // Optional: Canvas als Bild einbetten (wenn Route existiert)
-  let canvasImgHTML = '';
-  try {
-    if (route.length) {
-      const dataURL = canvas.toDataURL('image/png');
-      canvasImgHTML = `<div style="margin-top:12px"><img src="${dataURL}" alt="Routen-Canvas" style="max-width:100%;border:1px solid #ddd;border-radius:8px"/></div>`;
-    }
-  } catch(_) { /* kann ignoriert werden (Cross-Origin etc.) */ }
+  // HTML minimal & druckfreundlich
+  const now = new Date();
+  const dateStr = now.toLocaleString();
+  const methodText = (document.querySelector('#statMethod')?.textContent || '').trim();
+  const distText   = (document.querySelector('#statDistance')?.textContent || '').trim();
 
-  // Druck-HTML
+  const numberedHTML = items.map(it =>
+    `<li><strong>${it.pos}.</strong> ${escapeHTML(it.label)} — ${it.lat.toFixed(6)}, ${it.lon.toFixed(6)}</li>`
+  ).join('');
+
+  const coordsOnly = items.map(it => `${it.lat.toFixed(6)},${it.lon.toFixed(6)}`).join('\n');
+
   const html = `
 <!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<title>TSP Ergebnis – Druck</title>
+<title>Wegpunktliste – Druck</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root{ --fg:#111; --muted:#555; --border:#e5e7eb; }
-  body{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:var(--fg); margin:24px; }
-  h1{ margin:0 0 4px; font-size:20px; }
-  .meta{ color:var(--muted); margin:0 0 12px; }
-  .block{ border:1px solid var(--border); border-radius:12px; padding:16px; margin:12px 0; }
-  .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:8px; }
+  :root{ --fg:#111; --muted:#666; --border:#e5e7eb; }
+  *{ box-sizing:border-box; }
+  body{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol"; color:var(--fg); margin:24px; }
+  h1{ margin:0 0 6px; font-size:20px; }
+  .meta{ color:var(--muted); margin:0 0 14px; }
+  .section{ border:1px solid var(--border); border-radius:12px; padding:14px; margin:12px 0; }
+  ol{ margin:8px 0 0 22px; }
+  li{ margin:3px 0; }
+  pre{ background:#fafafa; border:1px solid var(--border); border-radius:8px; padding:10px; white-space:pre; overflow-wrap:normal; overflow:auto; }
+  .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:10px; margin-bottom:8px; }
   .stat b{ display:block; font-size:12px; color:var(--muted); }
   .stat span{ font-size:14px; }
-  ol{ margin:10px 0 0 20px; }
-  li{ margin:2px 0; }
-  .footnote{ margin-top:8px; color:var(--muted); font-size:12px; }
-  @media print { .noprint{ display:none } }
+  @media print {
+    body{ margin:10mm; }
+  }
 </style>
 </head>
 <body>
-  <h1>Ergebnisliste – TSP</h1>
-  <p class="meta">${dateStr}</p>
+  <h1>Wegpunktliste</h1>
+  <p class="meta">${escapeHTML(dateStr)}</p>
 
-  <section class="block">
+  <div class="section">
     <div class="grid">
-      <div class="stat"><b>Methode</b><span>${escapeHTML(methodText)}</span></div>
-      <div class="stat"><b>Gesamtdistanz</b><span>${escapeHTML(distText)}</span></div>
-      <div class="stat"><b>Punkte</b><span>${points.length}</span></div>
+      <div class="stat"><b>Methode / Routing</b><span>${escapeHTML(methodText || '–')}</span></div>
+      <div class="stat"><b>Gesamtdistanz</b><span>${escapeHTML(distText || '–')}</span></div>
+      <div class="stat"><b>Anzahl Einträge</b><span>${items.length}</span></div>
     </div>
-    ${canvasImgHTML}
-  </section>
+    <h2 style="margin:6px 0 6px; font-size:16px;">Reihenfolge (Label — lat, lon)</h2>
+    <ol>${numberedHTML}</ol>
+  </div>
 
-  <section class="block">
-    <h2 style="margin:0 0 8px; font-size:16px">Reihenfolge</h2>
-    <ol>${rows}</ol>
-  </section>
+  <div class="section">
+    <h2 style="margin:0 0 6px; font-size:16px;">Nur Koordinaten (lat,lon)</h2>
+    <pre>${coordsOnly}</pre>
+  </div>
 
-  <p class="footnote">Generiert mit deinem TSP Routenplaner.</p>
-
-  <script>
-    window.onload = () => { window.print(); };
-  </script>
+  <script>window.onload = () => { window.print(); };</script>
 </body>
-</html>`.trim();
+</html>
+  `.trim();
 
-  // Neues Fenster öffnen und drucken
   const w = window.open('', '_blank');
   if (!w) { showToast('Popup blockiert? Erlaube Popups zum Drucken.', { warn:true }); return; }
   w.document.open();
@@ -866,9 +876,12 @@ function printResult() {
   w.document.close();
   try { w.focus(); } catch(_) {}
 }
+
+// kleine Helferfunktion
 function escapeHTML(s=''){
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
 
    
   // ---------- Actions ----------
