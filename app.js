@@ -43,6 +43,8 @@
   const btnToggleCoords  = $('#btnToggleCoords');
   const btnToggleMap     = $('#btnToggleMap');
 
+  const btnPrint = document.querySelector('#btnPrint');
+ 
   const statNodes    = $('#statNodes');
   const statDistance = $('#statDistance');
   const statTime     = $('#statTime');
@@ -776,6 +778,99 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     download('route.gpx', gpx, 'application/gpx+xml');
   }
 
+function printResult() {
+  if (!points.length) {
+    showToast('Keine Punkte vorhanden.', { warn:true });
+    return;
+  }
+
+  // Daten einsammeln
+  const now = new Date();
+  const dateStr = now.toLocaleString();
+  const methodText = statMethod.textContent || '–';
+  const distText = statDistance.textContent || '–';
+
+  // Ergebnisliste aufbereiten (immer Label + Koordinate)
+  const rows = (route.length ? route : [...Array(points.length).keys()]).map((idx, pos) => {
+    const p = points[idx];
+    const label = p.label ?? `P${idx}`;
+    const coord = (metric === 'haversine')
+      ? `lat ${p.y.toFixed(5)}, lon ${p.x.toFixed(5)}`
+      : `x ${p.x.toFixed(2)}, y ${p.y.toFixed(2)}`;
+    return `<li><strong>${pos+1}.</strong> ${escapeHTML(label)} <span style="opacity:.8">(${coord})</span></li>`;
+  }).join('');
+
+  // Optional: Canvas als Bild einbetten (wenn Route existiert)
+  let canvasImgHTML = '';
+  try {
+    if (route.length) {
+      const dataURL = canvas.toDataURL('image/png');
+      canvasImgHTML = `<div style="margin-top:12px"><img src="${dataURL}" alt="Routen-Canvas" style="max-width:100%;border:1px solid #ddd;border-radius:8px"/></div>`;
+    }
+  } catch(_) { /* kann ignoriert werden (Cross-Origin etc.) */ }
+
+  // Druck-HTML
+  const html = `
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>TSP Ergebnis – Druck</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{ --fg:#111; --muted:#555; --border:#e5e7eb; }
+  body{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:var(--fg); margin:24px; }
+  h1{ margin:0 0 4px; font-size:20px; }
+  .meta{ color:var(--muted); margin:0 0 12px; }
+  .block{ border:1px solid var(--border); border-radius:12px; padding:16px; margin:12px 0; }
+  .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:8px; }
+  .stat b{ display:block; font-size:12px; color:var(--muted); }
+  .stat span{ font-size:14px; }
+  ol{ margin:10px 0 0 20px; }
+  li{ margin:2px 0; }
+  .footnote{ margin-top:8px; color:var(--muted); font-size:12px; }
+  @media print { .noprint{ display:none } }
+</style>
+</head>
+<body>
+  <h1>Ergebnisliste – TSP</h1>
+  <p class="meta">${dateStr}</p>
+
+  <section class="block">
+    <div class="grid">
+      <div class="stat"><b>Methode</b><span>${escapeHTML(methodText)}</span></div>
+      <div class="stat"><b>Gesamtdistanz</b><span>${escapeHTML(distText)}</span></div>
+      <div class="stat"><b>Punkte</b><span>${points.length}</span></div>
+    </div>
+    ${canvasImgHTML}
+  </section>
+
+  <section class="block">
+    <h2 style="margin:0 0 8px; font-size:16px">Reihenfolge</h2>
+    <ol>${rows}</ol>
+  </section>
+
+  <p class="footnote">Generiert mit deinem TSP Routenplaner.</p>
+
+  <script>
+    window.onload = () => { window.print(); };
+  </script>
+</body>
+</html>`.trim();
+
+  // Neues Fenster öffnen und drucken
+  const w = window.open('', '_blank');
+  if (!w) { showToast('Popup blockiert? Erlaube Popups zum Drucken.', { warn:true }); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  try { w.focus(); } catch(_) {}
+}
+function escapeHTML(s=''){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+   
   // ---------- Actions ----------
   function clearOsrmCache() {
     osrmDistanceMeters = null;
@@ -1080,5 +1175,6 @@ ${seq.map(p => `      <trkpt lat="${p.y}" lon="${p.x}"></trkpt>`).join('\n')}
     const f = e.dataTransfer?.files?.[0];
     if (f) parseFromFile(f);
   });
+btnPrint?.addEventListener('click', printResult);
 
 })();
