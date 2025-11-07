@@ -170,23 +170,27 @@
         <div id="map" class="leaflet-map" aria-label="Karte" style="display:none"></div>
       </section>
 
-      <section class="card">
-        <h2>Ergebnis</h2>
-        <div class="stats">
-          <div><strong>Punkte:</strong> <span id="statNodes">0</span></div>
-          <div><strong>Gesamtdistanz:</strong> <span id="statDistance">–</span></div>
-          <div><strong>Berechnungszeit:</strong> <span id="statTime">–</span></div>
-          <div><strong>Methode:</strong> <span id="statMethod">–</span></div>
-        </div>
+<section class="card">
+  <h2>Ergebnis</h2>
+  <div class="stats">
+    <div><strong>Punkte:</strong> <span id="statNodes">0</span></div>
+    <div><strong>Gesamtdistanz:</strong> <span id="statDistance">–</span></div>
+    <div><strong>Berechnungszeit:</strong> <span id="statTime">–</span></div>
+    <div><strong>Methode:</strong> <span id="statMethod">–</span></div>
+  </div>
 
-        <div class="route-list-wrap">
-          <h3>Reihenfolge</h3>
-          <ol id="routeList" class="route-list"></ol>
-        </div>
+  <div class="row gap" style="margin:8px 0 2px">
+    <button id="btnPrint">🖨️ Ergebnis drucken</button>
+  </div>
 
-        <p id="explainText" class="hint" style="margin-top:10px;"></p>
-      </section>
-    </section>
+  <div class="route-list-wrap">
+    <h3>Reihenfolge</h3>
+    <ol id="routeList" class="route-list"></ol>
+  </div>
+
+  <p id="explainText" class="hint" style="margin-top:10px;"></p>
+</section>
+
   </main>
 
   <footer class="app-footer">
