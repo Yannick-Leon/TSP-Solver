@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Zugang – Geschützte Seite</title>
+<meta name="robots" content="noindex, nofollow" />
+<style>
+  :root{
+    --bg: #0b1020; --card:#11172a; --fg:#e8ecf4; --muted:#a7b0c3;
+    --primary:#6aa2ff; --primary-2:#3b82f6; --border:#1d2640; --danger:#ef4444;
+    --ok:#22c55e; --warn:#f59e0b;
+  }
+  *{ box-sizing:border-box }
+  html,body{ height:100% }
+  body{
+    margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+    background: radial-gradient(1000px 600px at 20% 10%, #152147 0%, var(--bg) 60%) no-repeat, var(--bg);
+    color: var(--fg); display:grid; place-items:center; padding:24px;
+  }
+  .wrap{ width:min(420px, 100%); }
+  .card{
+    background: linear-gradient(180deg, #131a31 0%, var(--card) 100%);
+    border:1px solid var(--border); border-radius:16px; padding:22px 18px; box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  h1{ margin:0 0 8px; font-size:22px; letter-spacing:.3px }
+  p.sub{ margin:0 0 16px; color:var(--muted); font-size:14px }
+  .field{ margin:12px 0 }
+  label{ display:block; margin:0 0 8px; font-size:13px; color:var(--muted) }
+  .control{
+    display:grid; grid-template-columns: 1fr auto; gap:10px; align-items:center;
+    background:#0f162b; border:1px solid var(--border); border-radius:12px; padding:10px 12px;
+  }
+  input[type="password"],input[type="text"]{
+    background:transparent; border:0; outline:0; color:var(--fg); font-size:16px;
+  }
+  button.icon{
+    border:0; background:#0b1226; color:var(--muted); border:1px solid var(--border);
+    padding:8px 10px; border-radius:10px; cursor:pointer;
+  }
+  .row{ display:flex; gap:10px; align-items:center; justify-content:space-between; margin-top:10px }
+  .row .left{ display:flex; gap:8px; align-items:center }
+  input[type="checkbox"]{ width:16px; height:16px; accent-color: var(--primary) }
+  button.primary{
+    flex:1; background: linear-gradient(180deg, var(--primary) 0%, var(--primary-2) 100%);
+    color:#081022; font-weight:600; border:0; padding:12px 14px; border-radius:12px; cursor:pointer;
+  }
+  button.primary:disabled{ opacity:.6; cursor:not-allowed }
+  .hint{ color:var(--muted); font-size:12px; margin-top:8px }
+  .err{ color:var(--danger); font-size:13px; min-height:18px; margin-top:8px }
+  .ok { color:var(--ok) }
+  .warn { color:var(--warn) }
+  .footer{ margin-top:14px; display:flex; justify-content:space-between; color:var(--muted); font-size:12px }
+  code{ background:#0e1530; border:1px solid var(--border); padding:0 6px; border-radius:6px }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" role="dialog" aria-labelledby="t">
+      <h1 id="t">Geschützter Zugang</h1>
+      <p class="sub">Bitte gib dein Passwort ein, um fortzufahren.</p>
+
+      <div class="field">
+        <label for="pw">Passwort</label>
+        <div class="control">
+          <input id="pw" type="password" autocomplete="current-password" placeholder="••••••••" />
+          <button id="toggle" class="icon" type="button" aria-label="Passwort anzeigen/ausblenden">👁️</button>
+        </div>
+        <div id="err" class="err" aria-live="polite"></div>
+      </div>
+
+      <div class="row">
+        <div class="left">
+          <input type="checkbox" id="remember" />
+          <label for="remember">7 Tage merken</label>
+        </div>
+        <button id="submit" class="primary">Weiter</button>
+      </div>
+
+      <p class="hint">Hinweis: Client-seitiger Schutz – für schnelle, einfache Gates gedacht.</p>
+      <div class="footer">
+        <span id="status"></span>
+        <span>&copy; <span id="y"></span></span>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ---------- KONFIG ----------
+  // ÄNDERN: dein Passwort & Ziel-URL
+  const PASSWORD = "AllianzKuK21!";                 // <— HIER dein Passwort eintragen
+  const REDIRECT_URL = "./index.html";              // <— Zielseite (deine TSP-App)
+  const TITLE_FOR_NAV = "TSP Routenplaner";         // optional: Statusanzeige
+  const MAX_ATTEMPTS = 5;                           // Fehlversuche bis Cooldown
+  const COOLDOWN_SEC = 60;                          // Cooldown in Sekunden
+  const REMEMBER_DAYS = 7;                          // "7 Tage merken"
+
+  // ---------- STATE ----------
+  const elPw = document.getElementById('pw');
+  const elToggle = document.getElementById('toggle');
+  const elSubmit = document.getElementById('submit');
+  const elErr = document.getElementById('err');
+  const elRemember = document.getElementById('remember');
+  const elStatus = document.getElementById('status');
+  const elYear = document.getElementById('y');
+  elYear.textContent = new Date().getFullYear();
+  elStatus.textContent = TITLE_FOR_NAV;
+
+  let attempts = Number(localStorage.getItem('pw_attempts') || 0);
+  let cooldownUntil = Number(localStorage.getItem('pw_cooldown_until') || 0);
+
+  // Auto-Weiterleitung, falls gültiges Ticket existiert
+  const ticket = getValidTicket();
+  if (ticket) {
+    // Optional next=? Query übernehmen
+    const next = new URLSearchParams(location.search).get('next');
+    location.replace(next || REDIRECT_URL);
+    return;
+  }
+
+  // Cooldown prüfen
+  maybeUpdateCooldownUI();
+
+  // ---------- UI EVENTS ----------
+  elToggle.addEventListener('click', () => {
+    const t = elPw.getAttribute('type') === 'password' ? 'text' : 'password';
+    elPw.setAttribute('type', t);
+    elPw.focus();
+  });
+
+  elSubmit.addEventListener('click', onSubmit);
+  elPw.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') onSubmit();
+  });
+
+  function onSubmit(){
+    if (isInCooldown()) return;
+    const val = (elPw.value || '').trim();
+    if (!val) {
+      setError('Bitte gib ein Passwort ein.');
+      return;
+    }
+    if (val === PASSWORD) {
+      setError('', true);
+      // Ticket erzeugen
+      const remember = elRemember.checked;
+      saveTicket(remember ? REMEMBER_DAYS : 0);
+      // Weiterleiten (über ?next oder Config)
+      const next = new URLSearchParams(location.search).get('next');
+      location.replace(next || REDIRECT_URL);
+    } else {
+      attempts++;
+      localStorage.setItem('pw_attempts', String(attempts));
+      if (attempts >= MAX_ATTEMPTS) {
+        const until = Date.now() + COOLDOWN_SEC * 1000;
+        localStorage.setItem('pw_cooldown_until', String(until));
+        attempts = 0;
+        localStorage.setItem('pw_attempts', '0');
+        maybeUpdateCooldownUI();
+        return;
+      }
+      setError(`Falsches Passwort. (${attempts}/${MAX_ATTEMPTS})`);
+      elPw.select();
+      elPw.focus();
+    }
+  }
+
+  function setError(msg, ok=false){
+    elErr.textContent = msg;
+    elErr.className = 'err' + (ok ? ' ok' : (msg ? '' : ''));
+  }
+
+  function isInCooldown(){
+    const now = Date.now();
+    const until = Number(localStorage.getItem('pw_cooldown_until') || 0);
+    return now < until;
+  }
+  function maybeUpdateCooldownUI(){
+    if (!isInCooldown()) {
+      elSubmit.disabled = false;
+      elErr.textContent = '';
+      tickStop();
+      return;
+    }
+    elSubmit.disabled = true;
+    tick(); // Start Countdown
+  }
+
+  let tickTimer = null;
+  function tick(){
+    if (tickTimer) return;
+    tickTimer = setInterval(() => {
+      const until = Number(localStorage.getItem('pw_cooldown_until') || 0);
+      const diff = Math.max(0, Math.ceil((until - Date.now())/1000));
+      if (diff <= 0) {
+        clearInterval(tickTimer); tickTimer = null;
+        localStorage.removeItem('pw_cooldown_until');
+        elSubmit.disabled = false;
+        elErr.textContent = '';
+        return;
+      }
+      elErr.textContent = `Zu viele Versuche. Bitte warte ${diff}s …`;
+      elErr.className = 'err warn';
+    }, 250);
+  }
+  function tickStop(){
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+  }
+
+  // ---------- "Ticket" speichern/prüfen ----------
+  function saveTicket(days){
+    // Minimal-Ticket: {v:1, exp:timestamp}
+    const exp = days > 0 ? (Date.now() + days*24*3600*1000) : (Date.now() + 2*3600*1000); // 2h fallback
+    const ticket = { v:1, exp };
+    try {
+      (days > 0 ? localStorage : sessionStorage).setItem('paywall_ticket', JSON.stringify(ticket));
+    } catch(e){}
+  }
+  function getValidTicket(){
+    try {
+      // Priorität: localStorage (remember) vor sessionStorage
+      const rawLocal = localStorage.getItem('paywall_ticket');
+      if (rawLocal) {
+        const t = JSON.parse(rawLocal);
+        if (t && t.exp && Date.now() < t.exp) return t;
+        localStorage.removeItem('paywall_ticket');
+      }
+      const rawSession = sessionStorage.getItem('paywall_ticket');
+      if (rawSession) {
+        const t = JSON.parse(rawSession);
+        if (t && t.exp && Date.now() < t.exp) return t;
+        sessionStorage.removeItem('paywall_ticket');
+      }
+    } catch(e){}
+    return null;
+  }
+})();
+</script>
+</body>
+</html>
